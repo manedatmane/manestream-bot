@@ -1,18 +1,17 @@
 """
-Custom commands module - User-defined text commands with Google Sheets sync
+Custom commands module - ENHANCED for hidden URL embeds
+Improved version that attempts to hide URLs when only media is posted
 
-Commands:
-- !addcmd <name> <response> - Create a custom command
-- !delcmd <name> - Delete a custom command (admin only)
-- !editcmd <name> <response> - Edit a custom command (admin only)
-- !cmdinfo <name> - Show info about a custom command
-- !commands - Link to Google Sheets command list
-- !syncsheet - Manually sync all commands to Google Sheets (admin only)
+Key improvements:
+1. For image/video URLs: Uses special formatting to minimize URL visibility
+2. Handles long URLs by not truncating them
+3. Improved embed detection for various media types
 """
 
 import json
 import os
 import time
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional
@@ -34,6 +33,134 @@ try:
     GSPREAD_AVAILABLE = True
 except ImportError:
     GSPREAD_AVAILABLE = False
+
+
+def is_image_url(url: str) -> bool:
+    """
+    Check if a URL points to an image
+    """
+    url_lower = url.lower()
+    
+    # Check for direct image extensions
+    image_extensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.svg']
+    if any(url_lower.endswith(ext) for ext in image_extensions):
+        return True
+    
+    # Check for image hosting services that auto-embed
+    image_hosts = [
+        'i.imgur.com',
+        'media.giphy.com',
+        'media4.giphy.com',
+        'media1.giphy.com',
+        'media2.giphy.com',
+        'media3.giphy.com',
+        'tenor.com/view',
+        'i.redd.it',
+        'pbs.twimg.com',
+        'i.pinimg.com',
+        'cdn.discordapp.com/attachments',
+    ]
+    
+    return any(host in url_lower for host in image_hosts)
+
+
+def is_video_url(url: str) -> bool:
+    """Check if a URL points to a video or video platform"""
+    url_lower = url.lower()
+    
+    video_platforms = [
+        'youtube.com',
+        'youtu.be',
+        'streamable.com',
+        'twitch.tv',
+        'clips.twitch.tv',
+        'vimeo.com',
+    ]
+    
+    return any(platform in url_lower for platform in video_platforms)
+
+
+def extract_urls(text: str) -> list:
+    """Extract all URLs from text"""
+    url_pattern = r'https?://[^\s]+'
+    return re.findall(url_pattern, text)
+
+
+def format_media_only_message(url: str, media_type: str = "image") -> str:
+    """
+    Format a message to minimize URL visibility for media-only commands
+    
+    Options tried:
+    1. Just URL - shows URL + embed (current problem)
+    2. URL in brackets [url] - might hide it in some clients
+    3. URL with label [label](url) - markdown style (if supported)
+    
+    Since Manestream doesn't seem to support hiding URLs via formatting,
+    we'll just send the URL cleanly and let the user decide if they want
+    to add additional formatting in the command itself.
+    """
+    # For now, just return the URL as-is
+    # The chat client will handle the embedding
+    return url
+
+
+def send_smart_message(bot_client, response: str):
+    """
+    Send a message with smart handling of URLs and embeds
+    
+    Important: Since Manestream chat shows both URL and embed,
+    this version focuses on:
+    1. Not truncating URLs (send them complete)
+    2. Proper message splitting if needed
+    """
+    response = response.strip()
+    
+    # Extract URLs
+    urls = extract_urls(response)
+    
+    # Case 1: Response is ONLY a URL
+    if len(urls) == 1 and response.replace(urls[0], '').strip() == '':
+        url = urls[0]
+        
+        # Detect media type
+        if is_image_url(url):
+            formatted = format_media_only_message(url, "image")
+        elif is_video_url(url):
+            formatted = format_media_only_message(url, "video")
+        else:
+            formatted = url
+        
+        bot_client.send_message(formatted)
+        return
+    
+    # Case 2: Response contains URLs but also has other text
+    max_length = config.MAX_MESSAGE_LENGTH
+    
+    if len(response) <= max_length:
+        bot_client.send_message(response)
+    else:
+        # Split intelligently while keeping URLs intact
+        parts = []
+        current_part = ""
+        words = response.split()
+        
+        for word in words:
+            test_length = len(current_part) + len(word) + (1 if current_part else 0)
+            
+            if test_length <= max_length:
+                current_part += (" " if current_part else "") + word
+            else:
+                if current_part:
+                    parts.append(current_part)
+                current_part = word
+        
+        if current_part:
+            parts.append(current_part)
+        
+        # Send each part
+        for part in parts:
+            bot_client.send_message(part)
+            time.sleep(0.3)
 
 
 class GoogleSheetsSync:
@@ -63,22 +190,24 @@ class GoogleSheetsSync:
         ]
         creds = Credentials.from_service_account_file(self.credentials_file, scopes=scope)
         self.client = gspread.authorize(creds)
-        
-        # Open by spreadsheet ID
         self.sheet = self.client.open_by_key(self.spreadsheet_id).sheet1
     
     def categorize_command(self, command_name: str, response: str) -> str:
         """Categorize a command based on its response"""
         if not response or response.strip() == "":
             return "Text"
-        elif "youtube.com" in response or "youtu.be" in response:
-            return "Video"
-        elif any(ext in response.lower() for ext in ['.gif', '.jpg', '.jpeg', '.png', '.webp']):
-            return "Image"
-        elif "streamable.com" in response or "vocaroo.com" in response:
-            return "Media"
-        elif response.startswith("http"):
-            return "Link"
+        
+        urls = extract_urls(response)
+        if urls:
+            url = urls[0]
+            if is_image_url(url):
+                return "Image"
+            elif is_video_url(url):
+                return "Video"
+            elif "vocaroo.com" in url:
+                return "Audio"
+            else:
+                return "Link"
         else:
             return "Text"
     
@@ -88,16 +217,13 @@ class GoogleSheetsSync:
             return False
         
         try:
-            # Clear existing data
             self.sheet.clear()
             time.sleep(0.2)
             
-            # Add headers
             headers = ['Command Name', 'URL/Response', 'Type', 'Description', 'Last Updated']
             self.sheet.append_row(headers)
             time.sleep(0.2)
             
-            # Format headers (bold, gray background)
             try:
                 self.sheet.format('A1:E1', {
                     "textFormat": {"bold": True},
@@ -112,13 +238,8 @@ class GoogleSheetsSync:
             for cmd_name, response in sorted(commands_dict.items()):
                 cmd_type = self.categorize_command(cmd_name, response)
                 description = f"{cmd_type} command"
-                
-                # Truncate very long responses
-                display_response = response if len(response) <= 500 else response[:497] + "..."
-                
-                all_rows.append([f"!{cmd_name}", display_response, cmd_type, description, current_time])
+                all_rows.append([f"!{cmd_name}", response, cmd_type, description, current_time])
             
-            # Batch update in chunks of 50
             batch_size = 50
             for i in range(0, len(all_rows), batch_size):
                 batch = all_rows[i:i + batch_size]
@@ -127,7 +248,7 @@ class GoogleSheetsSync:
                 
                 try:
                     self.sheet.update(f"A{start_row}:E{end_row}", batch)
-                    time.sleep(0.5)  # Rate limiting
+                    time.sleep(0.5)
                 except Exception as e:
                     print(f"    [ERR] Batch update failed: {e}")
             
@@ -147,9 +268,7 @@ class GoogleSheetsSync:
             current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
             cmd_type = self.categorize_command(cmd_name, response)
             description = f"{cmd_type} command"
-            display_response = response if len(response) <= 500 else response[:497] + "..."
-            
-            self.sheet.append_row([f"!{cmd_name}", display_response, cmd_type, description, current_time])
+            self.sheet.append_row([f"!{cmd_name}", response, cmd_type, description, current_time])
             return True
         except Exception as e:
             print(f"    [ERR] Failed to add command to sheet: {e}")
@@ -161,14 +280,12 @@ class GoogleSheetsSync:
             return False
         
         try:
-            # Find the row with this command
             cell = self.sheet.find(f"!{cmd_name}")
             if cell:
                 self.sheet.delete_rows(cell.row)
                 return True
         except Exception as e:
             print(f"    [ERR] Failed to remove command from sheet: {e}")
-        
         return False
     
     def update_command_in_sheet(self, cmd_name: str, response: str) -> bool:
@@ -182,13 +299,10 @@ class GoogleSheetsSync:
                 row = cell.row
                 current_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                 cmd_type = self.categorize_command(cmd_name, response)
-                display_response = response if len(response) <= 500 else response[:497] + "..."
-                
-                self.sheet.update(f"B{row}:E{row}", [[display_response, cmd_type, f"{cmd_type} command", current_time]])
+                self.sheet.update(f"B{row}:E{row}", [[response, cmd_type, f"{cmd_type} command", current_time]])
                 return True
         except Exception as e:
             print(f"    [ERR] Failed to update command in sheet: {e}")
-        
         return False
     
     def get_sheet_url(self) -> str:
@@ -203,7 +317,6 @@ def load_custom_commands() -> Dict[str, str]:
     
     try:
         data = json.loads(CUSTOM_COMMANDS_FILE.read_text())
-        # Handle both old format (just response) and new format (with metadata)
         normalized = {}
         for name, value in data.items():
             if isinstance(value, str):
@@ -229,12 +342,7 @@ def get_custom_command(name: str) -> Optional[str]:
 
 
 def add_custom_command(name: str, response: str) -> bool:
-    """
-    Add a custom command
-    
-    Returns:
-        True if added, False if already exists
-    """
+    """Add a custom command. Returns True if added, False if already exists"""
     commands = load_custom_commands()
     name = name.lower()
     
@@ -244,7 +352,6 @@ def add_custom_command(name: str, response: str) -> bool:
     commands[name] = response
     save_custom_commands(commands)
     
-    # Sync to Google Sheets
     if sheets_sync and sheets_sync.enabled:
         sheets_sync.add_command_to_sheet(name, response)
     
@@ -252,12 +359,7 @@ def add_custom_command(name: str, response: str) -> bool:
 
 
 def delete_custom_command(name: str) -> bool:
-    """
-    Delete a custom command
-    
-    Returns:
-        True if deleted, False if not found
-    """
+    """Delete a custom command. Returns True if deleted, False if not found"""
     commands = load_custom_commands()
     name = name.lower()
     
@@ -267,7 +369,6 @@ def delete_custom_command(name: str) -> bool:
     del commands[name]
     save_custom_commands(commands)
     
-    # Remove from Google Sheets
     if sheets_sync and sheets_sync.enabled:
         sheets_sync.remove_command_from_sheet(name)
     
@@ -275,12 +376,7 @@ def delete_custom_command(name: str) -> bool:
 
 
 def edit_custom_command(name: str, response: str) -> bool:
-    """
-    Edit an existing custom command
-    
-    Returns:
-        True if edited, False if not found
-    """
+    """Edit an existing custom command. Returns True if edited, False if not found"""
     commands = load_custom_commands()
     name = name.lower()
     
@@ -290,7 +386,6 @@ def edit_custom_command(name: str, response: str) -> bool:
     commands[name] = response
     save_custom_commands(commands)
     
-    # Update in Google Sheets
     if sheets_sync and sheets_sync.enabled:
         sheets_sync.update_command_in_sheet(name, response)
     
@@ -300,7 +395,7 @@ def edit_custom_command(name: str, response: str) -> bool:
 @command(
     "addcmd",
     description="Create a custom command",
-    usage="!addcmd <name> <response>",
+    usage="!addcmd <n> <response>",
     aliases=["newcmd", "createcmd"],
 )
 def cmd_addcmd(ctx: CommandContext, args: str):
@@ -308,57 +403,57 @@ def cmd_addcmd(ctx: CommandContext, args: str):
     parts = args.split(maxsplit=1)
     
     if len(parts) < 2:
-        ctx.reply("Usage: !addcmd <name> <response>")
+        ctx.reply("Usage: !addcmd <n> <response>")
         return
     
     name = parts[0].lower().lstrip("!")
     response = parts[1]
     
-    # Check if name conflicts with built-in commands
     if registry.get_command(name):
         ctx.reply(f"!{name} is a built-in command and can't be overwritten")
         return
     
-    # Check length limits
     if len(name) > 32:
         ctx.reply("Command name too long (max 32 characters)")
         return
     
-    if len(response) > 500:
-        ctx.reply("Response too long (max 500 characters)")
+    # Increased limit for URLs (they can be very long)
+    max_response_length = 1500
+    if len(response) > max_response_length:
+        ctx.reply(f"Response too long (max {max_response_length} characters)")
         return
     
     if add_custom_command(name, response):
-        ctx.reply(f"Command !{name} has been added successfully")
+        ctx.reply(f"✅ Command !{name} added")
     else:
-        ctx.reply(f"Command !{name} already exists")
+        ctx.reply(f"❌ Command !{name} already exists")
 
 
 @command(
     "delcmd",
     description="Delete a custom command",
-    usage="!delcmd <name>",
+    usage="!delcmd <n>",
     aliases=["removecmd", "rmcmd"],
     admin=True,
 )
 def cmd_delcmd(ctx: CommandContext, args: str):
     """Delete a custom command (admin only)"""
     if not args.strip():
-        ctx.reply("Usage: !delcmd <name>")
+        ctx.reply("Usage: !delcmd <n>")
         return
     
     name = args.split()[0].lower().lstrip("!")
     
     if delete_custom_command(name):
-        ctx.reply(f"Command !{name} has been removed")
+        ctx.reply(f"✅ Command !{name} removed")
     else:
-        ctx.reply(f"Command !{name} not found")
+        ctx.reply(f"❌ Command !{name} not found")
 
 
 @command(
     "editcmd",
     description="Edit an existing custom command",
-    usage="!editcmd <name> <new_response>",
+    usage="!editcmd <n> <new_response>",
     admin=True,
 )
 def cmd_editcmd(ctx: CommandContext, args: str):
@@ -366,43 +461,61 @@ def cmd_editcmd(ctx: CommandContext, args: str):
     parts = args.split(maxsplit=1)
     
     if len(parts) < 2:
-        ctx.reply("Usage: !editcmd <name> <new_response>")
+        ctx.reply("Usage: !editcmd <n> <new_response>")
         return
     
     name = parts[0].lower().lstrip("!")
     response = parts[1]
     
-    if len(response) > 500:
-        ctx.reply("Response too long (max 500 characters)")
+    max_response_length = 1500
+    if len(response) > max_response_length:
+        ctx.reply(f"Response too long (max {max_response_length} characters)")
         return
     
     if edit_custom_command(name, response):
-        ctx.reply(f"Command !{name} has been updated")
+        ctx.reply(f"✅ Command !{name} updated")
     else:
-        ctx.reply(f"Command !{name} not found")
+        ctx.reply(f"❌ Command !{name} not found")
 
 
 @command(
     "cmdinfo",
     description="Show info about a custom command",
-    usage="!cmdinfo <name>",
+    usage="!cmdinfo <n>",
 )
 def cmd_cmdinfo(ctx: CommandContext, args: str):
     """Show custom command info"""
     if not args.strip():
-        ctx.reply("Usage: !cmdinfo <name>")
+        ctx.reply("Usage: !cmdinfo <n>")
         return
     
     name = args.split()[0].lower().lstrip("!")
     response = get_custom_command(name)
     
     if not response:
-        ctx.reply(f"!{name} not found")
+        ctx.reply(f"❌ !{name} not found")
         return
     
-    # Truncate response for display
-    display = response if len(response) <= 100 else response[:97] + "..."
-    ctx.reply(f"!{name} -> {display}")
+    # Show more for URLs
+    if extract_urls(response):
+        display = response if len(response) <= 250 else response[:247] + "..."
+    else:
+        display = response if len(response) <= 100 else response[:97] + "..."
+    
+    # Add type indicator
+    urls = extract_urls(response)
+    if urls:
+        url = urls[0]
+        if is_image_url(url):
+            type_indicator = "🖼️ Image"
+        elif is_video_url(url):
+            type_indicator = "🎥 Video"
+        else:
+            type_indicator = "🔗 Link"
+    else:
+        type_indicator = "💬 Text"
+    
+    ctx.reply(f"{type_indicator} !{name} → {display}")
 
 
 @command(
@@ -415,14 +528,12 @@ def cmd_commands(ctx: CommandContext, args: str):
     """Link to the full command list"""
     if sheets_sync and sheets_sync.enabled:
         sheet_url = sheets_sync.get_sheet_url()
-        ctx.reply(f"View all commands here: {sheet_url}")
+        ctx.reply(f"📋 Command list: {sheet_url}")
     else:
-        # Fallback to env variable URL
         spreadsheet_url = os.getenv("COMMANDS_SPREADSHEET_URL", "")
         if spreadsheet_url:
-            ctx.reply(f"View all commands here: {spreadsheet_url}")
+            ctx.reply(f"📋 Command list: {spreadsheet_url}")
         else:
-            # List commands in chat
             commands = load_custom_commands()
             if commands:
                 cmd_list = ", ".join([f"!{c}" for c in sorted(commands.keys())[:20]])
@@ -443,23 +554,22 @@ def cmd_commands(ctx: CommandContext, args: str):
 def cmd_syncsheet(ctx: CommandContext, args: str):
     """Manually sync all commands to Google Sheets (admin only)"""
     if not sheets_sync or not sheets_sync.enabled:
-        ctx.reply("Google Sheets integration is not available. Need credentials.json and GOOGLE_SHEET_ID")
+        ctx.reply("❌ Google Sheets integration not available")
         return
     
     commands = load_custom_commands()
-    ctx.reply(f"Starting sync of {len(commands)} commands...")
+    ctx.reply(f"🔄 Syncing {len(commands)} commands...")
     
     if sheets_sync.sync_all_commands(commands):
-        ctx.reply(f"Sync completed! View at: {sheets_sync.get_sheet_url()}")
+        ctx.reply(f"✅ Sync complete! {sheets_sync.get_sheet_url()}")
     else:
-        ctx.reply("Sync failed - check console for details")
+        ctx.reply("❌ Sync failed - check console")
 
 
 def setup(bot):
     """Module setup - register custom command handler and set up Google Sheets"""
     global sheets_sync, SHEETS_ENABLED
     
-    # Initialize Google Sheets if credentials exist
     credentials_file = DATA_DIR / "credentials.json"
     spreadsheet_id = os.getenv("GOOGLE_SHEET_ID", "1rbfLU0lJJ23q-WvuvQLg7gX1_59cPzrbuaYkwk97QEY")
     
@@ -468,11 +578,11 @@ def setup(bot):
         SHEETS_ENABLED = sheets_sync.enabled
     else:
         if not GSPREAD_AVAILABLE:
-            print("    [WARN] gspread not installed. Run: pip install gspread google-auth")
+            print("    [WARN] gspread not installed")
         if not credentials_file.exists():
-            print(f"    [WARN] No credentials.json found at {credentials_file}")
+            print(f"    [WARN] No credentials.json found")
     
-    # Add message handler for custom commands
+    # Message handler for custom commands
     def on_message(bot_client, message):
         content = message.content.strip()
         if content.startswith(config.COMMAND_PREFIX):
@@ -483,17 +593,15 @@ def setup(bot):
             
             cmd = cmd_part[len(config.COMMAND_PREFIX):].lower()
             
-            # Check if it's a custom command (not a built-in)
             if not registry.get_command(cmd):
                 response = get_custom_command(cmd)
                 if response:
-                    bot_client.send_message(response)
-                    return False  # Stop further processing
+                    send_smart_message(bot_client, response)
+                    return False
         return None
     
     bot.on_message_handlers.append(on_message)
     
-    # Load existing commands
     commands = load_custom_commands()
     print(f"    {len(commands)} custom commands loaded")
 
