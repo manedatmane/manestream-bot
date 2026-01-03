@@ -1,0 +1,66 @@
+# Docker Compose for Manestream Bot
+# 
+# Usage:
+#   docker-compose up -d        # Start bot
+#   docker-compose logs -f bot  # View logs
+#   docker-compose restart bot  # Restart
+#   docker-compose down         # Stop
+
+version: '3.8'
+
+services:
+  bot:
+    build: .
+    container_name: manestream-bot
+    restart: unless-stopped
+    
+    # Environment file
+    env_file:
+      - .env
+    
+    # Mount data directory for persistence
+    volumes:
+      - ./data:/app/data
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          cpus: '0.5'
+          memory: 256M
+        reservations:
+          cpus: '0.1'
+          memory: 64M
+    
+    # Logging configuration
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    
+    # Network
+    networks:
+      - manestream
+    
+    # Optional: If running chat server in same compose
+    # depends_on:
+    #   - chat
+
+# Optional: Chat server (if running both together)
+# chat:
+#   build: ../manestream-chat
+#   container_name: manestream-chat
+#   restart: unless-stopped
+#   ports:
+#     - "3000:3000"
+#   env_file:
+#     - ../manestream-chat/.env
+#   volumes:
+#     - ../manestream-chat/data:/app/data
+#   networks:
+#     - manestream
+
+networks:
+  manestream:
+    driver: bridge

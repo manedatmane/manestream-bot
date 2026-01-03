@@ -1,0 +1,12 @@
+# Manestream Bot Dependencies
+
+# Core
+python-socketio[client]>=5.0.0
+requests>=2.25.0
+
+# Optional: Environment variables from .env file
+python-dotenv>=0.19.0
+
+# Optional: Google Sheets integration
+gspread>=5.0.0
+google-auth>=2.0.0
