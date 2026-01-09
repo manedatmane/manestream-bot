@@ -53,6 +53,7 @@ class Message:
     user: User
     content: str
     timestamp: int
+    room: str = "public"
     
     @classmethod
     def from_dict(cls, data: dict) -> "Message":
@@ -61,6 +62,7 @@ class Message:
             user=User.from_dict(data.get("user", {})),
             content=data.get("content", ""),
             timestamp=data.get("timestamp", 0),
+            room=data.get("room", "public"),
         )
 
 
@@ -86,6 +88,10 @@ class BotClient:
         self.messages_processed = 0
         self.commands_processed = 0
         
+        # Room tracking
+        self.current_room = "public"
+        self.subscribed_rooms = ["public", "spam"]  # Rooms the bot listens to
+        
         # User tracking
         self.online_users: Dict[str, User] = {}
         
@@ -104,6 +110,13 @@ class BotClient:
         def connect():
             self.connected = True
             logger.info(f"[OK] Connected to {config.CHAT_SERVER_URL}")
+            
+            # Subscribe to all rooms we want to listen to
+            for room in self.subscribed_rooms:
+                if room != "public":  # public is default
+                    # We need to listen to all rooms but the server only lets us be in one
+                    # So we'll just receive messages from the room we're in
+                    pass
             
             for handler in self.on_connect_handlers:
                 try:
@@ -137,8 +150,15 @@ class BotClient:
                 traceback.print_exc()
         
         @self.sio.on("history")
-        def on_history(messages):
-            logger.info(f"Received {len(messages)} history messages")
+        def on_history(data):
+            # Handle both old format (list) and new format (dict with room and messages)
+            if isinstance(data, dict):
+                room = data.get("room", "public")
+                messages = data.get("messages", [])
+            else:
+                room = "public"
+                messages = data if isinstance(data, list) else []
+            logger.info(f"Received {len(messages)} history messages for room: {room}")
             # Don't process history as commands
         
         @self.sio.on("users")
@@ -153,7 +173,8 @@ class BotClient:
         def on_system(data):
             msg_type = data.get("type", "")
             message = data.get("message", "")
-            logger.info(f"System: [{msg_type}] {message}")
+            room = data.get("room", "public")
+            logger.info(f"System [{room}]: [{msg_type}] {message}")
         
         @self.sio.on("banned")
         def on_banned(data):
@@ -163,6 +184,26 @@ class BotClient:
         @self.sio.on("error")
         def on_error(data):
             logger.error(f"Server error: {data}")
+    
+    def switch_room(self, room_name: str):
+        """
+        Switch to a different room
+        
+        Args:
+            room_name: Name of the room to switch to ('public', 'spam', 'whispers')
+        """
+        valid_rooms = ["public", "spam", "whispers"]
+        if room_name not in valid_rooms:
+            logger.warning(f"Invalid room: {room_name}")
+            return
+        
+        if not self.connected:
+            logger.warning("Cannot switch room: not connected")
+            return
+        
+        self.sio.emit("switch_room", room_name)
+        self.current_room = room_name
+        logger.info(f"Switched to room: {room_name}")
     
     def _handle_message(self, data: dict):
         """Handle incoming chat message"""
@@ -177,7 +218,7 @@ class BotClient:
         if message.user.is_bot:
             return
         
-        logger.debug(f"[MSG] {message.user.display_name}: {message.content}")
+        logger.debug(f"[MSG][{message.room}] {message.user.display_name}: {message.content}")
         
         # Call message handlers
         for handler in self.on_message_handlers:
@@ -217,6 +258,7 @@ class BotClient:
             args=args,
             args_list=args.split() if args else [],
             command=cmd,
+            room=message.room,
         )
         
         # Dispatch to registry
@@ -229,19 +271,20 @@ class BotClient:
             
             if handled:
                 self.commands_processed += 1
-                logger.info(f"Command: !{cmd} by {message.user.display_name}")
+                logger.info(f"Command: !{cmd} by {message.user.display_name} in {message.room}")
                 
         except Exception as e:
             logger.error(f"Command dispatch error: {e}")
             import traceback
             traceback.print_exc()
     
-    def send_message(self, text: str):
+    def send_message(self, text: str, room: str = None):
         """
         Send a chat message
         
         Args:
             text: Message text to send
+            room: Optional room to send to (will switch rooms temporarily if needed)
         """
         if not self.connected:
             logger.warning("Cannot send message: not connected")
@@ -251,8 +294,17 @@ class BotClient:
         if len(text) > config.MAX_MESSAGE_LENGTH:
             text = text[:config.MAX_MESSAGE_LENGTH - 3] + "..."
         
+        # If a specific room is requested and it's different from current, switch to it
+        original_room = self.current_room
+        if room and room != self.current_room:
+            self.switch_room(room)
+        
         self.sio.emit("message", text)
-        logger.debug(f"Sent: {text[:50]}...")
+        logger.debug(f"Sent to {self.current_room}: {text[:50]}...")
+        
+        # Switch back to original room if we changed
+        if room and room != original_room:
+            self.switch_room(original_room)
     
     def connect(self) -> bool:
         """
@@ -336,4 +388,5 @@ class BotClient:
             "messages_processed": self.messages_processed,
             "commands_processed": self.commands_processed,
             "online_users": len(self.online_users),
+            "current_room": self.current_room,
         }

@@ -156,8 +156,8 @@ def cmd_roll(ctx: CommandContext, args: str):
     """Roll dice with special number bonuses - FREE to play"""
     from modules.economy import get_balance, set_balance, ensure_account
     
-    # Roll a number 0-999999
-    roll = random.randint(0, 999999)
+    # Roll a number 0-10000
+    roll = random.randint(0, 10000)
     roll_str = f"{roll:06d}"
     
     # Check for special patterns
@@ -165,10 +165,7 @@ def cmd_roll(ctx: CommandContext, args: str):
     prize_name = ""
     
     # Check from right to left for repeating digits
-    if roll_str[5] == roll_str[4] == roll_str[3] == roll_str[2] == roll_str[1] == roll_str[0]:
-        prize = 50000
-        prize_name = "SEXTS"
-    elif roll_str[5] == roll_str[4] == roll_str[3] == roll_str[2] == roll_str[1]:
+    if roll_str[5] == roll_str[4] == roll_str[3] == roll_str[2] == roll_str[1]:
         prize = 10000
         prize_name = "QUINTS"
     elif roll_str[5] == roll_str[4] == roll_str[3] == roll_str[2]:
@@ -182,13 +179,13 @@ def cmd_roll(ctx: CommandContext, args: str):
         prize_name = "DUBS"
     
     # Special number bonuses
-    if roll_str == "696969":
+    if roll_str == "6969":
         prize = 6969
         prize_name = "NICE"
-    elif roll_str == "420420":
-        prize = 4200
+    elif roll_str == "420":
+        prize = 420
         prize_name = "BLAZE IT"
-    elif roll_str == "000000":
+    elif roll_str == "0":
         prize = 10000
         prize_name = "ABSOLUTE ZERO"
     
@@ -212,7 +209,7 @@ def cmd_d20(ctx: CommandContext, args: str):
     """Roll a D20 - costs 5, nat20 wins 20, nat1 loses 10"""
     from modules.economy import get_balance, set_balance, ensure_account
     
-    D20_COST = 5
+    D20_COST = 0
     
     balance = ensure_account(ctx.user.username)
     
@@ -239,11 +236,11 @@ def cmd_d20(ctx: CommandContext, args: str):
         if new_balance < 0:
             new_balance = 0
         set_balance(ctx.user.username, new_balance)
-        ctx.reply(f"{ctx.user.display_name} rolled a NAT 1! Critical fail! [-{penalty + D20_COST} BongBux]")
+        ctx.reply(f"{ctx.user.display_name} rolled a NAT 1! Critical fail!")
     else:
         # Normal roll - just lose the cost
         set_balance(ctx.user.username, balance)
-        ctx.reply(f"{ctx.user.display_name} rolled a {roll}. [-{D20_COST} BongBux]")
+        ctx.reply(f"{ctx.user.display_name} rolled a {roll}.")
 
 
 @command(

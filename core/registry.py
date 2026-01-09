@@ -31,14 +31,15 @@ class CommandContext:
     args: str  # Arguments after command
     args_list: List[str]  # Arguments as list
     command: str  # Command that was invoked
+    room: str = "public"  # Room the message was sent in
     
     def reply(self, text: str):
-        """Send a reply message"""
-        self.bot.send_message(text)
+        """Send a reply message to the same room"""
+        self.bot.send_message(text, room=self.room)
     
     def reply_mention(self, text: str):
-        """Send a reply mentioning the user"""
-        self.bot.send_message(f"@{self.user.display_name}: {text}")
+        """Send a reply mentioning the user to the same room"""
+        self.bot.send_message(f"@{self.user.display_name}: {text}", room=self.room)
 
 
 class CommandRegistry:
